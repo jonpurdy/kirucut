@@ -33,6 +33,11 @@ protocol FFmpegServicing: Sendable {
 }
 
 struct FFmpegService: FFmpegServicing {
+    enum TestHooks {
+        nonisolated(unsafe) static var installedSearchDirectoriesOverride: [String]?
+        nonisolated(unsafe) static var bundledResourcesDirectoryOverride: URL?
+    }
+
     enum ServiceError: LocalizedError {
         case ffmpegNotFound
         case ffprobeNotFound
@@ -42,9 +47,9 @@ struct FFmpegService: FFmpegServicing {
         var errorDescription: String? {
             switch self {
             case .ffmpegNotFound:
-                return "ffmpeg was not found in PATH. Install it (for example: brew install ffmpeg)."
+                return "ffmpeg was not found. Enable \"Use installed ffmpeg\" and install it (for example: brew install ffmpeg), or provide a bundled ffmpeg."
             case .ffprobeNotFound:
-                return "ffprobe was not found. Install ffmpeg tools (for example: brew install ffmpeg)."
+                return "ffprobe was not found. Enable \"Use installed ffmpeg\" and install it (for example: brew install ffmpeg), or provide a bundled ffprobe."
             case .durationUnavailable:
                 return "Could not read input duration."
             case .commandFailed(let code, let output):
@@ -54,6 +59,27 @@ struct FFmpegService: FFmpegServicing {
                 return "ffmpeg failed with exit code \(code): \(output)"
             }
         }
+    }
+
+    static var useInstalledFFmpeg: Bool {
+        AppSettings.useInstalledFFmpeg
+    }
+
+    static func setUseInstalledFFmpeg(_ value: Bool) {
+        AppSettings.setUseInstalledFFmpeg(value)
+    }
+
+    static func installedToolsAvailable() -> Bool {
+        let fileManager = FileManager.default
+        guard let ffmpegURL = findInstalledExecutable(named: "ffmpeg", fileManager: fileManager) else {
+            return false
+        }
+
+        if fileManager.isExecutableFile(atPath: ffmpegURL.deletingLastPathComponent().appendingPathComponent("ffprobe").path) {
+            return true
+        }
+
+        return findInstalledExecutable(named: "ffprobe", fileManager: fileManager) != nil
     }
 
     func mediaDuration(inputURL: URL) async throws -> Double {
@@ -137,24 +163,12 @@ struct FFmpegService: FFmpegServicing {
 
     private func resolveFFmpegURL() async throws -> URL {
         let fileManager = FileManager.default
-
-        let pathCandidates = [
-            "/opt/homebrew/bin/ffmpeg",
-            "/usr/local/bin/ffmpeg",
-            "/usr/bin/ffmpeg"
-        ]
-
-        for path in pathCandidates where fileManager.isExecutableFile(atPath: path) {
-            return URL(fileURLWithPath: path)
-        }
-
-        if let pathEnv = ProcessInfo.processInfo.environment["PATH"] {
-            for path in pathEnv.split(separator: ":") {
-                let candidate = String(path) + "/ffmpeg"
-                if fileManager.isExecutableFile(atPath: candidate) {
-                    return URL(fileURLWithPath: candidate)
-                }
+        if Self.useInstalledFFmpeg {
+            if let installed = Self.findInstalledExecutable(named: "ffmpeg", fileManager: fileManager) {
+                return installed
             }
+        } else if let bundled = Self.findBundledExecutable(named: "ffmpeg", fileManager: fileManager) {
+            return bundled
         }
 
         throw ServiceError.ffmpegNotFound
@@ -163,33 +177,85 @@ struct FFmpegService: FFmpegServicing {
     private func resolveFFprobeURL() async throws -> URL {
         let fileManager = FileManager.default
 
-        if let ffmpegURL = try? await resolveFFmpegURL() {
-            let siblingProbe = ffmpegURL.deletingLastPathComponent().appendingPathComponent("ffprobe").path
-            if fileManager.isExecutableFile(atPath: siblingProbe) {
-                return URL(fileURLWithPath: siblingProbe)
+        if Self.useInstalledFFmpeg {
+            if let ffmpegURL = Self.findInstalledExecutable(named: "ffmpeg", fileManager: fileManager) {
+                let siblingProbe = ffmpegURL.deletingLastPathComponent().appendingPathComponent("ffprobe").path
+                if fileManager.isExecutableFile(atPath: siblingProbe) {
+                    return URL(fileURLWithPath: siblingProbe)
+                }
+            }
+
+            if let installed = Self.findInstalledExecutable(named: "ffprobe", fileManager: fileManager) {
+                return installed
+            }
+        } else {
+            if let ffmpegURL = Self.findBundledExecutable(named: "ffmpeg", fileManager: fileManager) {
+                let siblingProbe = ffmpegURL.deletingLastPathComponent().appendingPathComponent("ffprobe").path
+                if fileManager.isExecutableFile(atPath: siblingProbe) {
+                    return URL(fileURLWithPath: siblingProbe)
+                }
+            }
+
+            if let bundled = Self.findBundledExecutable(named: "ffprobe", fileManager: fileManager) {
+                return bundled
             }
         }
 
-        let pathCandidates = [
-            "/opt/homebrew/bin/ffprobe",
-            "/usr/local/bin/ffprobe",
-            "/usr/bin/ffprobe"
-        ]
+        throw ServiceError.ffprobeNotFound
+    }
+
+    private static func findBundledExecutable(named name: String, fileManager: FileManager) -> URL? {
+        let resourcesURL: URL
+        if let override = TestHooks.bundledResourcesDirectoryOverride {
+            resourcesURL = override
+        } else {
+            guard let bundled = Bundle.main.resourceURL else { return nil }
+            resourcesURL = bundled
+        }
+
+        let direct = resourcesURL.appendingPathComponent(name)
+        if fileManager.isExecutableFile(atPath: direct.path) {
+            return direct
+        }
+
+        let inBin = resourcesURL.appendingPathComponent("bin/\(name)")
+        if fileManager.isExecutableFile(atPath: inBin.path) {
+            return inBin
+        }
+
+        return nil
+    }
+
+    private static func findInstalledExecutable(named name: String, fileManager: FileManager) -> URL? {
+        let pathCandidates: [String]
+        if let overrideDirectories = TestHooks.installedSearchDirectoriesOverride {
+            pathCandidates = overrideDirectories.map { "\($0)/\(name)" }
+        } else {
+            pathCandidates = [
+                "/opt/homebrew/bin/\(name)",
+                "/usr/local/bin/\(name)",
+                "/usr/bin/\(name)"
+            ]
+        }
 
         for path in pathCandidates where fileManager.isExecutableFile(atPath: path) {
             return URL(fileURLWithPath: path)
         }
 
+        if TestHooks.installedSearchDirectoriesOverride != nil {
+            return nil
+        }
+
         if let pathEnv = ProcessInfo.processInfo.environment["PATH"] {
             for path in pathEnv.split(separator: ":") {
-                let candidate = String(path) + "/ffprobe"
+                let candidate = String(path) + "/\(name)"
                 if fileManager.isExecutableFile(atPath: candidate) {
                     return URL(fileURLWithPath: candidate)
                 }
             }
         }
 
-        throw ServiceError.ffprobeNotFound
+        return nil
     }
 
     private func runFFmpeg(ffmpegURL: URL, arguments: [String]) async throws {

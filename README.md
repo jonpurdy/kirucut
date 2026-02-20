@@ -7,6 +7,8 @@ Simple native macOS app that runs an `ffmpeg` stream-copy trim:
 Cuts are lossless stream-copy trims. The app computes `duration` as `endTime - startTime`.
 KiruCut also shows a predicted cut range before running, based on `ffprobe` packet timing.
 
+This product bundles FFmpeg, licensed under the LGPL.
+
 ## Requirements
 
 - macOS 15 (Sequoia)
