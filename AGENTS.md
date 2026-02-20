@@ -42,3 +42,8 @@ Current test coverage (in `Tests/KiruCutAppTests/KiruCutAppTests.swift`):
 - Input loading remains responsive even when preview compatibility detection is slow.
 - Cutting is rejected when output path matches input path.
 - Large subprocess output handling does not hang `runProcess`.
+- Settings defaults are correct when user defaults are unset (`Use installed ffmpeg` false, launch prompt true).
+- Launch input prompt does not arm when `Show Open Input File at launch` is disabled.
+- Installed-tool validation requires both `ffmpeg` and `ffprobe`.
+- ffmpeg/ffprobe resolution switches between installed and bundled tools based on setting.
+- Installed `ffprobe` resolution prefers a sibling next to the resolved installed `ffmpeg`.
