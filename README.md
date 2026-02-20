@@ -2,7 +2,12 @@
 
 kiru (切る) == to cut
 
-Simple native macOS app that runs an `ffmpeg` stream-copy trim:
+Simple native macOS app that cuts video losslessly; no recompression or quality loss and very fast.
+
+![Screenshot of KiruCut](screenshot.png)
+
+
+Behind the scenes, it runs an `ffmpeg` stream-copy trim:
 
 `ffmpeg -ss <start> -i <input> -c copy -map 0 -t <duration> <output>`
 
