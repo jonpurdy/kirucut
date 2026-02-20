@@ -12,10 +12,14 @@ final class CutterViewModel: ObservableObject {
     @Published private(set) var statusColor: Color = .secondary
     @Published private(set) var isRunning = false
     @Published private(set) var progressValue = 0.0
+    @Published private(set) var cutPredictionText: String = ""
 
     private let service: any FFmpegServicing
     private var progressTask: Task<Void, Never>?
+    private var predictionTask: Task<Void, Never>?
+    private var launchPromptTask: Task<Void, Never>?
     private var inputDurationSeconds: Double?
+    private var hasPromptedForInputOnLaunch = false
 
     init(service: any FFmpegServicing) {
         self.service = service
@@ -31,6 +35,26 @@ final class CutterViewModel: ObservableObject {
 
     var hasSelectedInput: Bool {
         inputURL != nil
+    }
+
+    func promptForInputOnLaunchIfNeeded() {
+        guard !hasPromptedForInputOnLaunch else { return }
+        hasPromptedForInputOnLaunch = true
+        guard inputURL == nil else { return }
+
+        launchPromptTask?.cancel()
+        launchPromptTask = Task { @MainActor in
+            for _ in 0..<20 {
+                if NSApp.isActive, NSApp.keyWindow != nil {
+                    break
+                }
+                try? await Task.sleep(for: .milliseconds(150))
+            }
+            guard self.inputURL == nil else { return }
+            NSApp.activate(ignoringOtherApps: true)
+            self.pickInputFile()
+            self.launchPromptTask = nil
+        }
     }
 
     func pickInputFile() {
@@ -49,6 +73,7 @@ final class CutterViewModel: ObservableObject {
         startTimeText = "0"
         endTimeText = ""
         inputDurationSeconds = nil
+        cutPredictionText = ""
         statusMessage = "Input selected. Reading duration..."
         statusColor = .secondary
 
@@ -60,9 +85,11 @@ final class CutterViewModel: ObservableObject {
                 endTimeText = formatTimeForInput(duration)
                 statusMessage = "Input selected. Output defaulted to same folder."
                 statusColor = .secondary
+                schedulePredictionUpdate()
             } catch {
                 guard inputURL == url else { return }
                 inputDurationSeconds = nil
+                cutPredictionText = ""
                 statusMessage = "Input selected, but duration could not be read: \(error.localizedDescription)"
                 statusColor = .red
             }
@@ -159,6 +186,10 @@ final class CutterViewModel: ObservableObject {
                 progressTask = nil
             }
             do {
+                if let prediction = try? await service.predictCut(inputURL: inputURL, requestedStart: start, requestedEnd: end) {
+                    cutPredictionText = formatPrediction(prediction)
+                }
+
                 try await service.cut(
                     inputURL: inputURL,
                     outputURL: outputURL,
@@ -175,6 +206,37 @@ final class CutterViewModel: ObservableObject {
                 statusColor = .red
             }
         }
+    }
+
+    func schedulePredictionUpdate() {
+        predictionTask?.cancel()
+        predictionTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(220))
+            await self?.updatePrediction()
+        }
+    }
+
+    func applyTrimSelection(start: Double, end: Double) {
+        guard inputURL != nil else { return }
+
+        var clampedStart = max(0, start)
+        var clampedEnd = max(0, end)
+        if let inputDurationSeconds {
+            clampedStart = min(clampedStart, inputDurationSeconds)
+            clampedEnd = min(clampedEnd, inputDurationSeconds)
+        }
+
+        guard clampedEnd > clampedStart else {
+            statusMessage = "Invalid trim selection from preview."
+            statusColor = .red
+            return
+        }
+
+        startTimeText = formatTimeForInput(clampedStart)
+        endTimeText = formatTimeForInput(clampedEnd)
+        statusMessage = "Trim range updated from preview."
+        statusColor = .secondary
+        schedulePredictionUpdate()
     }
 
     private func defaultOutputURL(for inputURL: URL) -> URL {
@@ -234,6 +296,41 @@ final class CutterViewModel: ObservableObject {
             return String(format: "%02d", Int(safe.rounded()))
         }
         return String(format: "%05.2f", safe)
+    }
+
+    private func updatePrediction() async {
+        guard let inputURL else {
+            cutPredictionText = ""
+            return
+        }
+        guard let start = parseTime(startTimeText), start >= 0 else {
+            cutPredictionText = ""
+            return
+        }
+        guard let end = parseTime(endTimeText), end > start else {
+            cutPredictionText = ""
+            return
+        }
+
+        do {
+            let prediction = try await service.predictCut(inputURL: inputURL, requestedStart: start, requestedEnd: end)
+            guard self.inputURL == inputURL else { return }
+            cutPredictionText = formatPrediction(prediction)
+        } catch {
+            cutPredictionText = ""
+        }
+    }
+
+    private func formatPrediction(_ prediction: CutPrediction) -> String {
+        var line = "Requested \(formatSeconds(prediction.requestedStart))s -> \(formatSeconds(prediction.requestedEnd))s | "
+        line += "Predicted \(formatSeconds(prediction.predictedStart))s -> \(formatSeconds(prediction.predictedEnd))s"
+
+        if let fps = prediction.frameRate, fps > 0 {
+            let startFrame = Int((prediction.predictedStart * fps).rounded())
+            let endFrame = Int((prediction.predictedEnd * fps).rounded())
+            line += " (frames ~\(startFrame)-\(endFrame) @ \(String(format: "%.3f", fps))fps)"
+        }
+        return line
     }
 
     private func startProgress(estimatedDuration: Double) {

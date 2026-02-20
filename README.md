@@ -4,8 +4,8 @@ Simple native macOS app that runs an `ffmpeg` stream-copy trim:
 
 `ffmpeg -ss <start> -i <input> -c copy -map 0 -t <duration> <output>`
 
-Cuts are keyframe-aligned (lossless stream copy behavior).
-The app computes `duration` as `endTime - startTime`.
+Cuts are lossless stream-copy trims. The app computes `duration` as `endTime - startTime`.
+KiruCut also shows a predicted cut range before running, based on `ffprobe` packet timing.
 
 ## Requirements
 
@@ -48,4 +48,9 @@ open dist/KiruCut.app
 3. Set start time and end time (`seconds` or `mm:ss`).
 4. Click **Cut Video**.
 
-Status text shows success/error details.
+Notes:
+
+- If end time is longer than the file, KiruCut resets it to the video end.
+- If output exists, KiruCut asks before replacing it.
+- Prediction is approximate and container-dependent; actual output timing can differ by a few frames.
+- Status text shows success/error details.

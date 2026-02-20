@@ -7,8 +7,8 @@ struct KiruCutApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView(viewModel: viewModel)
-                .frame(minWidth: 680, minHeight: 460)
+                .frame(minWidth: 680)
         }
-        .windowResizability(.contentMinSize)
+        .windowResizability(.contentSize)
     }
 }
