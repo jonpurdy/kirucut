@@ -1,5 +1,23 @@
 import Foundation
 
+private final class ProcessOutputBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    func append(_ chunk: Data) {
+        lock.lock()
+        data.append(chunk)
+        lock.unlock()
+    }
+
+    func snapshot() -> Data {
+        lock.lock()
+        let copy = data
+        lock.unlock()
+        return copy
+    }
+}
+
 struct CutPrediction: Sendable {
     let requestedStart: Double
     let requestedEnd: Double
@@ -245,7 +263,7 @@ struct FFmpegService: FFmpegServicing {
         return Double(cleaned)
     }
 
-    private func runProcess(
+    func runProcess(
         executable: String,
         arguments: [String],
         collectOutput: Bool = true
@@ -258,12 +276,24 @@ struct FFmpegService: FFmpegServicing {
             let outputPipe = Pipe()
             process.standardOutput = outputPipe
             process.standardError = outputPipe
+            let outputBuffer = ProcessOutputBuffer()
+
+            if collectOutput {
+                outputPipe.fileHandleForReading.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    guard !data.isEmpty else { return }
+                    outputBuffer.append(data)
+                }
+            }
 
             process.terminationHandler = { process in
+                outputPipe.fileHandleForReading.readabilityHandler = nil
                 let output: String
                 if collectOutput {
-                    let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
-                    output = String(decoding: data, as: UTF8.self)
+                    let remainingData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+                    outputBuffer.append(remainingData)
+                    let finalData = outputBuffer.snapshot()
+                    output = String(decoding: finalData, as: UTF8.self)
                 } else {
                     output = ""
                 }

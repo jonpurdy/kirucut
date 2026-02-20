@@ -1,9 +1,12 @@
+@preconcurrency import AVFoundation
 import AppKit
 import Foundation
 import SwiftUI
 
 @MainActor
 final class CutterViewModel: ObservableObject {
+    typealias PreviewAvailabilityDetector = @Sendable (URL) async -> String?
+
     @Published var startTimeText: String = ""
     @Published var endTimeText: String = ""
     @Published private(set) var inputURL: URL?
@@ -13,6 +16,8 @@ final class CutterViewModel: ObservableObject {
     @Published private(set) var isRunning = false
     @Published private(set) var progressValue = 0.0
     @Published private(set) var cutPredictionText: String = ""
+    @Published private(set) var isCheckingPreviewAvailability = false
+    @Published private(set) var previewUnavailableMessage: String?
 
     private let service: any FFmpegServicing
     private var progressTask: Task<Void, Never>?
@@ -20,9 +25,13 @@ final class CutterViewModel: ObservableObject {
     private var launchPromptTask: Task<Void, Never>?
     private var inputDurationSeconds: Double?
     private var hasPromptedForInputOnLaunch = false
+    private let previewAvailabilityDetector: PreviewAvailabilityDetector
 
-    init(service: any FFmpegServicing) {
+    init(service: any FFmpegServicing, previewAvailabilityDetector: PreviewAvailabilityDetector? = nil) {
         self.service = service
+        self.previewAvailabilityDetector = previewAvailabilityDetector ?? { url in
+            await Self.defaultPreviewAvailabilityDetector(for: url)
+        }
     }
 
     var inputPathDisplay: String {
@@ -68,16 +77,25 @@ final class CutterViewModel: ObservableObject {
             return
         }
 
+        _ = loadInputFile(url: url)
+    }
+
+    @discardableResult
+    func loadInputFile(url: URL) -> Task<Void, Never> {
         inputURL = url
         outputURL = defaultOutputURL(for: url)
         startTimeText = "0"
         endTimeText = ""
         inputDurationSeconds = nil
         cutPredictionText = ""
+        isCheckingPreviewAvailability = true
+        previewUnavailableMessage = nil
         statusMessage = "Input selected. Reading duration..."
         statusColor = .secondary
 
-        Task {
+        return Task {
+            async let previewAvailability = previewAvailabilityDetector(url)
+
             do {
                 let duration = try await service.mediaDuration(inputURL: url)
                 guard inputURL == url else { return }
@@ -93,6 +111,11 @@ final class CutterViewModel: ObservableObject {
                 statusMessage = "Input selected, but duration could not be read: \(error.localizedDescription)"
                 statusColor = .red
             }
+
+            let previewMessage = await previewAvailability
+            guard inputURL == url else { return }
+            isCheckingPreviewAvailability = false
+            previewUnavailableMessage = previewMessage
         }
     }
 
@@ -116,6 +139,12 @@ final class CutterViewModel: ObservableObject {
         statusColor = .secondary
     }
 
+    func setOutputFile(url: URL) {
+        outputURL = url
+        statusMessage = "Output selected."
+        statusColor = .secondary
+    }
+
     func runCut() {
         guard !isRunning else { return }
 
@@ -127,6 +156,12 @@ final class CutterViewModel: ObservableObject {
 
         guard let outputURL else {
             statusMessage = "Select an output file first."
+            statusColor = .red
+            return
+        }
+
+        guard inputURL.standardizedFileURL != outputURL.standardizedFileURL else {
+            statusMessage = "Output file must be different from input file."
             statusColor = .red
             return
         }
@@ -348,6 +383,61 @@ final class CutterViewModel: ObservableObject {
                 }
                 try? await Task.sleep(for: .milliseconds(120))
             }
+        }
+    }
+
+    private static func defaultPreviewAvailabilityDetector(for inputURL: URL) async -> String? {
+        if inputURL.pathExtension.caseInsensitiveCompare("mkv") == .orderedSame {
+            return "Preview unavailable: QuickTime does not natively support MKV playback."
+        }
+
+        let asset = AVURLAsset(url: inputURL)
+
+        do {
+            let isPlayable = try await asset.load(.isPlayable)
+            guard isPlayable else {
+                return "Preview unavailable: QuickTime cannot play this file's format or codec."
+            }
+
+            let videoTracks = try await asset.loadTracks(withMediaType: .video)
+            guard !videoTracks.isEmpty else {
+                return "Preview unavailable: this file has no video track."
+            }
+
+            let decodeProbeMessage = await withTaskGroup(of: String?.self) { group in
+                group.addTask(priority: .userInitiated) {
+                    let probeAsset = AVURLAsset(url: inputURL)
+                    let generator = AVAssetImageGenerator(asset: probeAsset)
+                    generator.appliesPreferredTrackTransform = true
+
+                    return await withCheckedContinuation { continuation in
+                        generator.generateCGImagesAsynchronously(forTimes: [NSValue(time: .zero)]) { _, image, _, result, _ in
+                            if image != nil, result == .succeeded {
+                                continuation.resume(returning: nil)
+                            } else {
+                                continuation.resume(returning: "Preview unavailable: QuickTime cannot decode frames for this file's codec.")
+                            }
+                        }
+                    }
+                }
+
+                group.addTask {
+                    try? await Task.sleep(for: .seconds(3))
+                    return "Preview unavailable: compatibility check timed out."
+                }
+
+                let firstResult = await group.next() ?? "Preview unavailable: compatibility check failed."
+                group.cancelAll()
+                return firstResult
+            }
+
+            if let decodeProbeMessage {
+                return decodeProbeMessage
+            }
+
+            return nil
+        } catch {
+            return "Preview unavailable: \(error.localizedDescription)"
         }
     }
 }

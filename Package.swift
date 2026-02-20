@@ -13,6 +13,11 @@ let package = Package(
         .executableTarget(
             name: "KiruCutApp",
             path: "Sources/KiruCutApp"
+        ),
+        .testTarget(
+            name: "KiruCutAppTests",
+            dependencies: ["KiruCutApp"],
+            path: "Tests/KiruCutAppTests"
         )
     ]
 )
