@@ -2,6 +2,14 @@ import XCTest
 @testable import KiruCutApp
 
 final class KiruCutAppTests: XCTestCase {
+    private let useInstalledFFmpegKey = "UseInstalledFFmpeg"
+    private let showOpenInputAtLaunchKey = "ShowOpenInputAtLaunch"
+
+    override func tearDown() {
+        super.tearDown()
+        resetSettingsAndHooks()
+    }
+
     func testLoadInputSetsDurationBeforeSlowPreviewCheckFinishes() async throws {
         let url = URL(fileURLWithPath: "/tmp/input.mp4")
         let service = MockFFmpegService(duration: 12.5)
@@ -63,6 +71,160 @@ final class KiruCutAppTests: XCTestCase {
         XCTAssertEqual(output.exitCode, 0)
         XCTAssertTrue(output.output.contains("line50000"))
     }
+
+    func testAppSettingsDefaultsWhenUnset() {
+        resetSettingsAndHooks()
+
+        XCTAssertFalse(AppSettings.useInstalledFFmpeg)
+        XCTAssertTrue(AppSettings.showOpenInputAtLaunch)
+    }
+
+    func testPromptForInputDoesNotArmWhenLaunchPromptSettingDisabled() async {
+        resetSettingsAndHooks()
+        AppSettings.setShowOpenInputAtLaunch(false)
+
+        let service = MockFFmpegService(duration: 1)
+        let launchCounter = await MainActor.run { MainActorCounter() }
+        let viewModel = await MainActor.run {
+            CutterViewModel(
+                service: service,
+                previewAvailabilityDetector: { _ in nil },
+                launchInputPrompter: {
+                    launchCounter.increment()
+                }
+            )
+        }
+
+        await MainActor.run {
+            viewModel.promptForInputOnLaunchIfNeeded()
+        }
+        try? await Task.sleep(for: .milliseconds(150))
+
+        let attempts = await MainActor.run { launchCounter.value() }
+        XCTAssertEqual(attempts, 0)
+        let armed = await MainActor.run { viewModel.hasPromptedForInputOnLaunchForTesting }
+        XCTAssertFalse(armed)
+    }
+
+    func testInstalledToolsAvailableRequiresBothTools() throws {
+        resetSettingsAndHooks()
+        let sandbox = try TemporaryDirectory()
+
+        FFmpegService.TestHooks.installedSearchDirectoriesOverride = [sandbox.url.path]
+        XCTAssertFalse(FFmpegService.installedToolsAvailable())
+
+        try writeExecutable(
+            at: sandbox.url.appendingPathComponent("ffmpeg"),
+            contents: "#!/bin/zsh\necho ok\n"
+        )
+        XCTAssertFalse(FFmpegService.installedToolsAvailable())
+
+        try writeExecutable(
+            at: sandbox.url.appendingPathComponent("ffprobe"),
+            contents: "#!/bin/zsh\necho ok\n"
+        )
+        XCTAssertTrue(FFmpegService.installedToolsAvailable())
+    }
+
+    func testMediaDurationUsesInstalledOrBundledResolverBySetting() async throws {
+        resetSettingsAndHooks()
+        let sandbox = try TemporaryDirectory()
+        let installedDir = sandbox.url.appendingPathComponent("installed", isDirectory: true)
+        let bundledDir = sandbox.url.appendingPathComponent("bundled", isDirectory: true)
+        let bundledBinDir = bundledDir.appendingPathComponent("bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: installedDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: bundledBinDir, withIntermediateDirectories: true)
+
+        try writeExecutable(
+            at: installedDir.appendingPathComponent("ffmpeg"),
+            contents: "#!/bin/zsh\nexit 0\n"
+        )
+        try writeExecutable(
+            at: installedDir.appendingPathComponent("ffprobe"),
+            contents: "#!/bin/zsh\necho 11.11\n"
+        )
+        try writeExecutable(
+            at: bundledBinDir.appendingPathComponent("ffprobe"),
+            contents: "#!/bin/zsh\necho 22.22\n"
+        )
+
+        FFmpegService.TestHooks.installedSearchDirectoriesOverride = [installedDir.path]
+        FFmpegService.TestHooks.bundledResourcesDirectoryOverride = bundledDir
+        let service = FFmpegService()
+        let inputURL = sandbox.url.appendingPathComponent("dummy.mp4")
+
+        AppSettings.setUseInstalledFFmpeg(true)
+        let installedDuration = try await service.mediaDuration(inputURL: inputURL)
+        XCTAssertEqual(installedDuration, 11.11, accuracy: 0.001)
+
+        AppSettings.setUseInstalledFFmpeg(false)
+        let bundledDuration = try await service.mediaDuration(inputURL: inputURL)
+        XCTAssertEqual(bundledDuration, 22.22, accuracy: 0.001)
+    }
+
+    func testInstalledFFprobePrefersSiblingOfResolvedFFmpeg() async throws {
+        resetSettingsAndHooks()
+        let sandbox = try TemporaryDirectory()
+        let pathFirstDir = sandbox.url.appendingPathComponent("path-first", isDirectory: true)
+        let ffmpegDir = sandbox.url.appendingPathComponent("ffmpeg-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: pathFirstDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: ffmpegDir, withIntermediateDirectories: true)
+
+        try writeExecutable(
+            at: pathFirstDir.appendingPathComponent("ffprobe"),
+            contents: "#!/bin/zsh\necho 44.44\n"
+        )
+        try writeExecutable(
+            at: ffmpegDir.appendingPathComponent("ffmpeg"),
+            contents: "#!/bin/zsh\nexit 0\n"
+        )
+        try writeExecutable(
+            at: ffmpegDir.appendingPathComponent("ffprobe"),
+            contents: "#!/bin/zsh\necho 33.33\n"
+        )
+
+        FFmpegService.TestHooks.installedSearchDirectoriesOverride = [pathFirstDir.path, ffmpegDir.path]
+        AppSettings.setUseInstalledFFmpeg(true)
+
+        let duration = try await FFmpegService().mediaDuration(inputURL: sandbox.url.appendingPathComponent("dummy.mp4"))
+        XCTAssertEqual(duration, 33.33, accuracy: 0.001)
+    }
+
+    private func resetSettingsAndHooks() {
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: useInstalledFFmpegKey)
+        defaults.removeObject(forKey: showOpenInputAtLaunchKey)
+        FFmpegService.TestHooks.installedSearchDirectoriesOverride = nil
+        FFmpegService.TestHooks.bundledResourcesDirectoryOverride = nil
+    }
+}
+
+@MainActor
+private final class MainActorCounter {
+    private var count = 0
+
+    func increment() {
+        count += 1
+    }
+
+    func value() -> Int {
+        count
+    }
+}
+
+private struct TemporaryDirectory {
+    let url: URL
+
+    init() throws {
+        let parent = FileManager.default.temporaryDirectory
+        url = parent.appendingPathComponent("KiruCutTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    }
+}
+
+private func writeExecutable(at url: URL, contents: String) throws {
+    try contents.write(to: url, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
 }
 
 private actor MockFFmpegServiceState {

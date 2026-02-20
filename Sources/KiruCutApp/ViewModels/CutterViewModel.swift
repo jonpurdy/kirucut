@@ -6,6 +6,7 @@ import SwiftUI
 @MainActor
 final class CutterViewModel: ObservableObject {
     typealias PreviewAvailabilityDetector = @Sendable (URL) async -> String?
+    typealias LaunchInputPrompter = @MainActor () -> Void
 
     @Published var startTimeText: String = ""
     @Published var endTimeText: String = ""
@@ -26,12 +27,22 @@ final class CutterViewModel: ObservableObject {
     private var inputDurationSeconds: Double?
     private var hasPromptedForInputOnLaunch = false
     private let previewAvailabilityDetector: PreviewAvailabilityDetector
+    private let launchInputPrompter: LaunchInputPrompter?
 
-    init(service: any FFmpegServicing, previewAvailabilityDetector: PreviewAvailabilityDetector? = nil) {
+    init(
+        service: any FFmpegServicing,
+        previewAvailabilityDetector: PreviewAvailabilityDetector? = nil,
+        launchInputPrompter: LaunchInputPrompter? = nil
+    ) {
         self.service = service
         self.previewAvailabilityDetector = previewAvailabilityDetector ?? { url in
             await Self.defaultPreviewAvailabilityDetector(for: url)
         }
+        self.launchInputPrompter = launchInputPrompter
+    }
+
+    var hasPromptedForInputOnLaunchForTesting: Bool {
+        hasPromptedForInputOnLaunch
     }
 
     var inputPathDisplay: String {
@@ -47,6 +58,7 @@ final class CutterViewModel: ObservableObject {
     }
 
     func promptForInputOnLaunchIfNeeded() {
+        guard AppSettings.showOpenInputAtLaunch else { return }
         guard !hasPromptedForInputOnLaunch else { return }
         hasPromptedForInputOnLaunch = true
         guard inputURL == nil else { return }
@@ -61,7 +73,11 @@ final class CutterViewModel: ObservableObject {
             }
             guard self.inputURL == nil else { return }
             NSApp.activate(ignoringOtherApps: true)
-            self.pickInputFile()
+            if let launchInputPrompter = self.launchInputPrompter {
+                launchInputPrompter()
+            } else {
+                self.pickInputFile()
+            }
             self.launchPromptTask = nil
         }
     }
