@@ -80,10 +80,23 @@ struct ContentView: View {
 
             if let inputURL = viewModel.inputURL {
                 GroupBox("Preview") {
-                    InputPreviewPlayer(inputURL: inputURL) { start, end in
-                        viewModel.applyTrimSelection(start: start, end: end)
+                    if viewModel.isCheckingPreviewAvailability {
+                        Text("Checking preview compatibility...")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, minHeight: 220, alignment: .center)
+                    } else if let previewUnavailableMessage = viewModel.previewUnavailableMessage {
+                        VStack(spacing: 6) {
+                            Text(previewUnavailableMessage)
+                            Text("Use manual start and end time inputs.")
+                        }
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 220, alignment: .center)
+                    } else {
+                        InputPreviewPlayer(inputURL: inputURL) { start, end in
+                            viewModel.applyTrimSelection(start: start, end: end)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 220)
                     }
-                    .frame(maxWidth: .infinity, minHeight: 220)
                 }
             }
 
