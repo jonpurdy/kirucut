@@ -15,6 +15,7 @@ This product bundles FFmpeg and FFprobe (LGPL build) in the app bundle by defaul
 
 - macOS 15 (Sequoia)
 - Xcode 16 (Swift 6 toolchain)
+- Apple Silicon Mac (`arm64`) for the provided release build output
 - No system FFmpeg install is required for end users (the release app bundles tools).
 - Optional: installed `ffmpeg` + `ffprobe` if you enable **Use installed ffmpeg** in Settings.
 
