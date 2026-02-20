@@ -1,4 +1,6 @@
-# KiruCut (macOS SwiftUI)
+# KiruCut
+
+kiru (切る) == to cut
 
 Simple native macOS app that runs an `ffmpeg` stream-copy trim:
 
@@ -7,14 +9,14 @@ Simple native macOS app that runs an `ffmpeg` stream-copy trim:
 Cuts are lossless stream-copy trims. The app computes `duration` as `endTime - startTime`.
 KiruCut also shows a predicted cut range before running, based on `ffprobe` packet timing.
 
-This product bundles FFmpeg, licensed under the LGPL.
+This product bundles FFmpeg and FFprobe (LGPL build) in the app bundle by default.
 
 ## Requirements
 
 - macOS 15 (Sequoia)
 - Xcode 16 (Swift 6 toolchain)
-- `ffmpeg` available in `PATH` (example: `brew install ffmpeg`)
-  - App also checks common install paths directly, including `/opt/homebrew/bin/ffmpeg`.
+- No system FFmpeg install is required for end users (the release app bundles tools).
+- Optional: installed `ffmpeg` + `ffprobe` if you enable **Use installed ffmpeg** in Settings.
 
 ## Build
 
@@ -34,6 +36,10 @@ Output:
 
 - `dist/KiruCut.app`
 
+Note:
+
+- The release build script copies installed `ffmpeg`/`ffprobe` into the app bundle (`Contents/Resources/bin`) for redistribution.
+
 ## Run
 
 - Double-click `dist/KiruCut.app`, or
@@ -42,6 +48,11 @@ Output:
 ```bash
 open dist/KiruCut.app
 ```
+
+Gatekeeper note:
+
+- This local build is not code-signed or notarized by default.
+- You may need to bypass Gatekeeper (right-click app -> **Open**, or **System Settings > Privacy & Security > Open Anyway**).
 
 ## Usage
 
@@ -54,5 +65,8 @@ Notes:
 
 - If end time is longer than the file, KiruCut resets it to the video end.
 - If output exists, KiruCut asks before replacing it.
+- Tools source can be switched in Settings:
+  - Default: bundled `ffmpeg`/`ffprobe`
+  - Optional: installed `ffmpeg`/`ffprobe` from your system
 - Prediction is approximate and container-dependent; actual output timing can differ by a few frames.
 - Status text shows success/error details.
